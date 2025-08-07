@@ -1,0 +1,79 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  IMAGE_NAME: node-hello
+  IMAGE_TAG: ${{ github.sha }}
+  - name: Trivy Scan
+      uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: ${{ secrets.DOCKER_USERNAME }}/node-hello:${{ github.sha }}
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint and Test (optional)
+        run: |
+          echo "No test script yet" # Replace with real commands if needed
+          # npm run lint
+          # npm test
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build Docker image
+        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:${{ env.IMAGE_TAG }} .
+
+      - name: Push Docker image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:${{ env.IMAGE_TAG }}
+
+  deploy:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up kubectl
+        run: |
+          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 --decode > kubeconfig.yaml
+          export KUBECONFIG=$PWD/kubeconfig.yaml
+          kubectl version --client
+
+      - name: Set new image in deployment
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig.yaml
+          kubectl set image deployment/node-hello-deploy node-hello=${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:${{ env.IMAGE_TAG }} --namespace default
+
+      - name: Rollout status
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig.yaml
+          kubectl rollout status deployment/node-hello-deploy --timeout=60s
+
+      - name: Rollback if deployment fails
+        if: failure()
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig.yaml
+          echo "Rolling back..."
+          kubectl rollout undo deployment/node-hello-deploy
+
